@@ -1,0 +1,9 @@
+opencv-python>=4.5
+numpy>=1.19
+matplotlib>=3.1
+torch>=1.8
+torchvision>=0.9
+torchcam>=0.4.0
+scipy
+imageio
+tqdm
