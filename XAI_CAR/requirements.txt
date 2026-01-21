@@ -1,9 +1,19 @@
-opencv-python>=4.5
-numpy>=1.19
-matplotlib>=3.1
-torch>=1.8
-torchvision>=0.9
-torchcam>=0.4.0
-scipy
-imageio
-tqdm
+# Core numerical & vision libraries
+numpy>=1.21
+opencv-python>=4.7
+matplotlib>=3.6
+scipy>=1.8
+imageio>=2.25
+tqdm>=4.65
+pandas>=1.5
+Pillow>=9.0
+seaborn>=0.12
+
+# Deep learning (CPU-friendly, Python 3.10)
+torch>=2.0,<2.3
+torchvision>=0.15,<0.18
+
+# Explainable AI (Grad-CAM)
+grad-cam>=1.5.0
+
+scikit-learn>=1.2
