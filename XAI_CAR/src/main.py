@@ -26,16 +26,20 @@ from utils import resize_keep_aspect, draw_text, preprocess_for_cnn
 
 # ---------------- CONFIG (edit these) ----------------
 CONFIG = {
-    'lane_model_path': 'models/lane_cnn.pth',    # path to lane CNN
-    'yolo_weights': 'models/yolov5_tiny.pt',    # YOLOv5 weights
-    'device': 'cpu',                             # 'cpu' or 'cuda'
+    'lane_model_path': 'models/lane_cnn_weights.pth',
+
+    'yolo_weights': 'models/yolov5_tiny.pt',
+    'device': 'cpu',
     'output_dir': 'outputs',
     'save_video': True,
     'show': True,
     'camera_index': None,
-    'xai_target_layer': 'features.7'             # change to match lane CNN architecture
+    'xai_target_layer': 'features.7'
 }
+
 # ---------------------------------------------------
+
+
 
 def ensure_dir(path):
     if not os.path.exists(path):

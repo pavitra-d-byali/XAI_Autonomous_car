@@ -1,104 +1,143 @@
 import cv2
 import numpy as np
 import torch
+
 from utils import draw_text, preprocess_for_cnn
+from lane_model import LaneCNN
+
 
 class LaneDetector:
-    def __init__(self, model_path=None, device='cpu'):
-        """
-        Lane Detector with CNN model and classical OpenCV fallback.
-        :param model_path: Path to PyTorch CNN model (optional)
-        :param device: 'cpu' or 'cuda'
-        """
+    """
+    Lane Detector using:
+    - CNN-based lane segmentation (preferred)
+    - Classical OpenCV fallback (safe mode)
+    """
+
+    def __init__(self, model_path=None, device="cpu"):
         self.device = device
         self.model = None
+        self.use_cnn = False
+
         if model_path:
-            self.model = torch.load(model_path, map_location=device)
-            self.model.eval()
+            try:
+                # Initialize architecture
+                self.model = LaneCNN().to(self.device)
+
+                # Load WEIGHTS ONLY (PyTorch 2.6+ safe)
+                state_dict = torch.load(
+                    model_path,
+                    map_location=self.device,
+                    weights_only=True
+                )
+                self.model.load_state_dict(state_dict)
+                self.model.eval()
+
+                self.use_cnn = True
+                print("[INFO] Lane CNN loaded successfully")
+
+            except Exception as e:
+                print("[WARN] CNN load failed, using OpenCV fallback:", e)
+                self.model = None
+                self.use_cnn = False
 
     def detect(self, frame):
         """
-        Detect lanes in the frame.
-        Returns dict: {'frame': overlay, 'lane_mask': mask_bin, 'steering_angle': angle}
+        Args:
+            frame (BGR image)
+
+        Returns:
+            dict:
+                frame           -> visualization
+                lane_mask       -> binary mask
+                steering_angle  -> float | None
         """
+
         h, w = frame.shape[:2]
         overlay = frame.copy()
-        angle = None
-        mask_bin = None
+        lane_mask = None
+        steering_angle = None
 
-        # ------------------------
+        # =====================================================
         # CNN-based lane detection
-        # ------------------------
-        if self.model:
-            img_tensor = torch.tensor(preprocess_for_cnn(frame), device=self.device)
-            with torch.no_grad():
-                pred = self.model(img_tensor)  # Modify if your CNN output differs
-            mask = pred.squeeze().cpu().numpy()
-            mask_bin = (mask > 0.5).astype(np.uint8) * 255
-            mask_bin_resized = cv2.resize(mask_bin, (w, h))
-            overlay = cv2.addWeighted(frame, 0.8, cv2.cvtColor(mask_bin_resized, cv2.COLOR_GRAY2BGR), 0.2, 0)
-            # Optional: estimate angle from CNN mask (if output is segmentation)
-            ys, xs = np.where(mask_bin_resized > 0)
-            if len(xs) > 0:
-                cx = int(xs.mean())
-                angle = (cx - w//2) / (w//2) * 25  # crude steering heuristic
-            if angle is not None:
-                draw_text(overlay, f"Steering: {angle:.2f} deg", (10,30))
-            return {'frame': overlay, 'lane_mask': mask_bin_resized, 'steering_angle': angle}
+        # =====================================================
+        if self.use_cnn and self.model is not None:
+            try:
+                inp = preprocess_for_cnn(frame, size=(224, 224))
+                inp = torch.tensor(inp, dtype=torch.float32).unsqueeze(0).to(self.device)
 
-        # ------------------------
+                with torch.no_grad():
+                    logits = self.model(inp)
+                    probs = torch.sigmoid(logits)
+
+                mask = probs.squeeze().cpu().numpy()
+                lane_mask = (mask > 0.5).astype(np.uint8) * 255
+                lane_mask = cv2.resize(lane_mask, (w, h))
+
+                # Overlay visualization
+                overlay = cv2.addWeighted(
+                    frame, 0.8,
+                    cv2.cvtColor(lane_mask, cv2.COLOR_GRAY2BGR),
+                    0.2, 0
+                )
+
+                # Steering estimation
+                ys, xs = np.where(lane_mask > 0)
+                if len(xs) > 0:
+                    center_x = int(xs.mean())
+                    steering_angle = (center_x - w // 2) / (w // 2) * 25
+                    draw_text(overlay, f"Steer: {steering_angle:.2f}", (10, 30))
+
+                return {
+                    "frame": overlay,
+                    "lane_mask": lane_mask,
+                    "steering_angle": steering_angle
+                }
+
+            except Exception as e:
+                print("[WARN] CNN inference failed, switching to OpenCV:", e)
+                self.use_cnn = False
+
+        # =====================================================
         # Classical OpenCV fallback
-        # ------------------------
+        # =====================================================
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5,5), 0)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blur, 50, 150)
 
-        # Region of interest polygon
-        mask = np.zeros_like(edges)
-        polygon = np.array([[
+        roi = np.zeros_like(edges)
+        polygon = np.array([[ 
             (0, h),
             (w, h),
-            (int(0.6*w), int(0.6*h)),
-            (int(0.4*w), int(0.6*h))
+            (int(0.6 * w), int(0.6 * h)),
+            (int(0.4 * w), int(0.6 * h))
         ]], np.int32)
-        cv2.fillPoly(mask, polygon, 255)
-        cropped = cv2.bitwise_and(edges, mask)
 
-        # Hough lines detection
-        lines = cv2.HoughLinesP(cropped, 1, np.pi/180, 30, minLineLength=30, maxLineGap=200)
+        cv2.fillPoly(roi, polygon, 255)
+        cropped = cv2.bitwise_and(edges, roi)
+
+        lines = cv2.HoughLinesP(
+            cropped, 1, np.pi / 180,
+            threshold=30,
+            minLineLength=30,
+            maxLineGap=200
+        )
+
+        slopes = []
         if lines is not None:
-            for x1,y1,x2,y2 in lines[:,0,:]:
-                cv2.line(overlay, (x1,y1), (x2,y2), (0,255,0), 3)
-
-            # crude steering angle heuristic: average slope
-            slopes = []
-            for x1,y1,x2,y2 in lines[:,0,:]:
+            for x1, y1, x2, y2 in lines[:, 0]:
+                cv2.line(overlay, (x1, y1), (x2, y2), (0, 255, 0), 3)
                 if x2 != x1:
-                    slopes.append((y2-y1)/(x2-x1))
-            if slopes:
-                mean_slope = np.mean(slopes)
-                angle = np.degrees(np.arctan(mean_slope))
-                draw_text(overlay, f"Steering (est): {angle:.1f} deg", (10,30))
+                    slopes.append((y2 - y1) / (x2 - x1))
 
-        # Lane mask (for controller/XAI)
-        mask_bin = cv2.dilate(cropped, np.ones((5,5), np.uint8), iterations=2)
+        if slopes:
+            mean_slope = np.mean(slopes)
+            steering_angle = np.degrees(np.arctan(mean_slope))
+            draw_text(overlay, f"Steer(est): {steering_angle:.1f}", (10, 30))
 
-        return {'frame': overlay, 'lane_mask': mask_bin, 'steering_angle': angle}
+        lane_mask = cv2.dilate(cropped, np.ones((5, 5), np.uint8), iterations=2)
 
-
-# ------------------------
-# Quick local test
-# ------------------------
-if __name__ == '__main__':
-    cap = cv2.VideoCapture(0)
-    ld = LaneDetector(model_path=None)  # set model_path='models/lane_cnn.pth' if you have CNN
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        res = ld.detect(frame)
-        cv2.imshow('lane', res['frame'])
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-    cap.release()
-    cv2.destroyAllWindows()
+        return {
+            "frame": overlay,
+            "lane_mask": lane_mask,
+            "steering_angle": steering_angle
+        }

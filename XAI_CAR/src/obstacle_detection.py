@@ -1,6 +1,3 @@
-"""Obstacle detection module using YOLOv5 (torch.hub) or a saved yolov5_tiny.pt custom weight.
-Change points: set `weights_path` in initialization. If you prefer to use local yolov5 clone, replace torch.hub usage.
-"""
 import torch
 import cv2
 import numpy as np
@@ -10,12 +7,21 @@ from utils import draw_bbox
 class ObstacleDetector:
     def __init__(self, weights_path=None, device='cpu', conf_thres=0.3):
         self.device = device
-        self.weights_path = weights_path
         self.conf_thres = conf_thres
-        # Try to load with torch.hub (ultralytics)
+        self.model = None
+
+        # ----------------------------
+        # Try loading YOLOv5 safely
+        # ----------------------------
         try:
             if weights_path and weights_path.endswith('.pt'):
-                # custom weights
+                # Check for empty / invalid weight file
+                try:
+                    with open(weights_path, 'rb') as f:
+                        f.read(1)
+                except Exception:
+                    raise RuntimeError("YOLO weight file is missing or empty")
+
                 self.model = torch.hub.load(
                     'ultralytics/yolov5',
                     'custom',
@@ -23,37 +29,60 @@ class ObstacleDetector:
                     force_reload=False
                 )
             else:
-                # fallback to pretrained small
+                # fallback to pretrained yolov5s
                 self.model = torch.hub.load(
                     'ultralytics/yolov5',
                     'yolov5s',
                     pretrained=True
                 )
+
             self.model.to(self.device)
             self.model.conf = conf_thres
-            print('YOLOv5 model loaded')
+            print("[INFO] YOLOv5 loaded successfully")
+
         except Exception as e:
-            raise RuntimeError(
-                'Failed to load YOLOv5 via torch.hub. '
-                'Make sure internet access is allowed or use local yolov5 clone. '
-                f'Error: {e}'
-            )
+            print("[WARN] YOLOv5 not available, running without obstacle detection")
+            print("[WARN]", e)
+            self.model = None
 
     def detect(self, frame):
-        # Convert BGR->RGB
-        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.model(img)
-
-        # results.xyxy[0] -> tensor N x 6 (x1,y1,x2,y2,conf,class)
-        preds = results.xyxy[0].cpu().numpy() if hasattr(results, 'xyxy') else []
-        detections = []
+        """
+        Returns:
+        {
+            'frame': overlay frame,
+            'detections': list of detections
+        }
+        """
         overlay = frame.copy()
+        detections = []
 
-        for *xyxy, conf, cls in preds:
+        # ----------------------------
+        # If YOLO not loaded → bypass
+        # ----------------------------
+        if self.model is None:
+            return {'frame': overlay, 'detections': detections}
+
+        # BGR → RGB
+        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        with torch.no_grad():
+            results = self.model(img)
+
+        # YOLOv5 output
+        if not hasattr(results, 'xyxy'):
+            return {'frame': overlay, 'detections': detections}
+
+        preds = results.xyxy[0].cpu().numpy()
+
+        for x1, y1, x2, y2, conf, cls in preds:
+            if conf < self.conf_thres:
+                continue
+
             label = f"{self.model.names[int(cls)]} {conf:.2f}"
-            draw_bbox(overlay, xyxy, label=label)
+            draw_bbox(overlay, [x1, y1, x2, y2], label=label)
+
             detections.append({
-                'xyxy': [float(x) for x in xyxy],
+                'xyxy': [float(x1), float(y1), float(x2), float(y2)],
                 'conf': float(conf),
                 'class': int(cls),
                 'label': self.model.names[int(cls)]
@@ -62,16 +91,21 @@ class ObstacleDetector:
         return {'frame': overlay, 'detections': detections}
 
 
+# ----------------------------
+# Local test
+# ----------------------------
 if __name__ == '__main__':
-    od = ObstacleDetector(weights_path='models/yolov5_tiny.pt')
+    od = ObstacleDetector(weights_path=None)  # safe default
     cap = cv2.VideoCapture(0)
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
         res = od.detect(frame)
-        cv2.imshow('obs', res['frame'])
+        cv2.imshow('obstacles', res['frame'])
+
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
