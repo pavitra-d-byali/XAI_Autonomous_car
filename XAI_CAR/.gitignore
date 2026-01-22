@@ -6,3 +6,4 @@ venv310/
 __pycache__/
 *.pyc
 *.mp4
+.env
