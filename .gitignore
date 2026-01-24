@@ -1,0 +1,7 @@
+.env
+XAI_CAR/data/
+data/
+venv/
+tfenv/
+__pycache__/
+*.pyc
