@@ -89,3 +89,5 @@ torch.save(
 )
 
 print("✅ Model saved to models/lane_unet.pth")
+
+# minor refactor note
