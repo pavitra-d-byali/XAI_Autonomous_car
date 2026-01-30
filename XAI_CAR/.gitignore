@@ -1,16 +1,13 @@
-venv310/
+# Python
 __pycache__/
 *.pyc
+venv*/
+.env
 
-venv310/
-__pycache__/
-*.pyc
-*.mp4
-.env
-.env
-data/
-data/
-.env
-data/
-venv/
-tfenv/
+# Training artifacts
+checkpoints/
+inference/output/
+
+# OS
+.DS_Store
+Thumbs.db
