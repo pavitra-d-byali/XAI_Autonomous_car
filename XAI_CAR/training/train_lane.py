@@ -1,93 +1,84 @@
-import os
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
+from torch import optim
+import os
 
-from training.bdd100k_dataset import BDD100KLaneDataset
-from models.lane_unet import LaneUNet
-import inspect
-from training.bdd100k_dataset import BDD100KLaneDataset
+from training.dataset import BDD100KLaneDataset
+from models.unet import UNet
 
-print("USING DATASET FROM:", inspect.getfile(BDD100KLaneDataset))
+# 🔴 CRITICAL for Windows CPU
+torch.set_num_threads(1)
 
-
-
-# =========================
-# Device
-# =========================
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device:", DEVICE)
 
-
-# =========================
-# Dataset & DataLoader
-# =========================
-train_dataset = BDD100KLaneDataset(
-    images_dir="data/bdd100k/images/train",
-    masks_dir="data/bdd100k/masks/train",
-    size=(120, 120)
-)
-
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=2,
-    shuffle=True,
-    num_workers=0,          # ✅ REQUIRED on Windows
-    pin_memory=(DEVICE.type == "cuda"),
-    drop_last=True          # ✅ avoids small last batch instability
-)
-
-
-# =========================
-# Model, Loss, Optimizer
-# =========================
-model = LaneUNet().to(DEVICE)
-
-criterion = nn.BCEWithLogitsLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-
-# =========================
-# Training Loop
-# =========================
 EPOCHS = 2
+BATCH_SIZE = 1
+LR = 1e-4
 
-for epoch in range(EPOCHS):
-    model.train()
-    epoch_loss = 0.0
+IMG_DIR = "data/bdd100k/images/train"
+MASK_DIR = "data/bdd100k/masks/train"
 
-    for images, masks in train_loader:
-        images = images.to(DEVICE, non_blocking=True)
-        masks = masks.to(DEVICE, non_blocking=True)
-
-        optimizer.zero_grad()
-
-        preds = model(images)
-        loss = criterion(preds, masks)
-
-        loss.backward()
-        optimizer.step()
-
-        epoch_loss += loss.item()
-
-    avg_loss = epoch_loss / len(train_loader)
-    print(f"Epoch [{epoch + 1}/{EPOCHS}] | Loss: {avg_loss:.4f}")
+os.makedirs("checkpoints", exist_ok=True)
 
 
-# =========================
-# Save model
-# =========================
-os.makedirs("models", exist_ok=True)
+def main():
+    dataset = BDD100KLaneDataset(
+        IMG_DIR,
+        MASK_DIR,
+        img_size=(64, 128)
+    )
 
-torch.save(
-    {
-        "model_state_dict": model.state_dict(),
-        "epochs": EPOCHS,
-        "loss": avg_loss,
-    },
-    "models/lane_unet.pth"
-)
+    print("Dataset size:", len(dataset))
 
-print("✅ Model saved to models/lane_unet.pth")
+    loader = DataLoader(
+        dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=0
+    )
 
-# minor refactor note
+    model = UNet().to(DEVICE)
+
+    # Sanity forward pass
+    imgs, masks = next(iter(loader))
+    imgs = imgs.to(DEVICE)
+    out = model(imgs)
+    print("Forward pass OK:", out.shape)
+
+    bce = torch.nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+
+    for epoch in range(EPOCHS):
+        model.train()
+        epoch_loss = 0.0
+
+        for i, (imgs, masks) in enumerate(loader):
+            imgs = imgs.to(DEVICE)
+            masks = masks.to(DEVICE)
+
+            preds = model(imgs)
+            loss = bce(preds, masks)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+
+            print(f"Epoch {epoch+1} | Batch {i}")
+
+            # 🔴 HARD STOP after 20 batches
+            if i == 20:
+                break
+
+        print(f"Epoch {epoch+1} done | Loss: {epoch_loss/(i+1):.4f}")
+
+        torch.save(
+            model.state_dict(),
+            f"checkpoints/unet_epoch_{epoch+1}.pth"
+        )
+
+
+if __name__ == "__main__":
+    main()
