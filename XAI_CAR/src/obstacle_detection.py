@@ -1,113 +1,108 @@
-import torch
-import cv2
-import numpy as np
-from utils import draw_bbox
+import json
+import os
 
+# =====================================================
+# PATH SETUP
+# =====================================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "../../"))
 
-class ObstacleDetector:
-    def __init__(self, weights_path=None, device='cpu', conf_thres=0.3):
-        self.device = device
-        self.conf_thres = conf_thres
-        self.model = None
+LABEL_ROOT = os.path.join(PROJECT_ROOT, "data", "bdd100k", "labels")
+YOLO_LABEL_ROOT = os.path.join(PROJECT_ROOT, "data", "bdd100k", "labels_yolo")
 
-        # ----------------------------
-        # Try loading YOLOv5 safely
-        # ----------------------------
-        try:
-            if weights_path and weights_path.endswith('.pt'):
-                # Check for empty / invalid weight file
-                try:
-                    with open(weights_path, 'rb') as f:
-                        f.read(1)
-                except Exception:
-                    raise RuntimeError("YOLO weight file is missing or empty")
+IMG_WIDTH = 1280
+IMG_HEIGHT = 720
 
-                self.model = torch.hub.load(
-                    'ultralytics/yolov5',
-                    'custom',
-                    path=weights_path,
-                    force_reload=False
+# =====================================================
+# CLASSES (BDD100K OFFICIAL)
+# =====================================================
+CLASSES = {
+    "person": 0,
+    "rider": 1,
+    "car": 2,
+    "bus": 3,
+    "truck": 4,
+    "bike": 5,
+    "motor": 6,
+    "traffic light": 7,
+    "traffic sign": 8
+}
+
+# =====================================================
+# CREATE OUTPUT DIRS
+# =====================================================
+for split in ["train", "val"]:
+    os.makedirs(os.path.join(YOLO_LABEL_ROOT, split), exist_ok=True)
+
+# =====================================================
+# CONVERSION
+# =====================================================
+total_written = 0
+total_skipped = 0
+
+for split in ["train", "val"]:
+    split_dir = os.path.join(LABEL_ROOT, split)
+    json_files = [f for f in os.listdir(split_dir) if f.endswith(".json")]
+
+    print(f"Processing {split}: {len(json_files)} label files")
+
+    written = 0
+    skipped = 0
+
+    for jf in json_files:
+        json_path = os.path.join(split_dir, jf)
+
+        with open(json_path, "r") as f:
+            data = json.load(f)
+
+        yolo_lines = []
+
+        # 🔥 KEY FIX: iterate FRAMES → OBJECTS
+        for frame in data.get("frames", []):
+            for obj in frame.get("objects", []):
+
+                category = obj.get("category")
+                if category not in CLASSES:
+                    continue
+
+                box = obj.get("box2d")
+                if box is None:
+                    continue
+
+                x1, y1 = box["x1"], box["y1"]
+                x2, y2 = box["x2"], box["y2"]
+
+                if x2 <= x1 or y2 <= y1:
+                    continue
+
+                x_center = ((x1 + x2) / 2) / IMG_WIDTH
+                y_center = ((y1 + y2) / 2) / IMG_HEIGHT
+                width = (x2 - x1) / IMG_WIDTH
+                height = (y2 - y1) / IMG_HEIGHT
+
+                class_id = CLASSES[category]
+
+                yolo_lines.append(
+                    f"{class_id} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}"
                 )
-            else:
-                # fallback to pretrained yolov5s
-                self.model = torch.hub.load(
-                    'ultralytics/yolov5',
-                    'yolov5s',
-                    pretrained=True
-                )
 
-            self.model.to(self.device)
-            self.model.conf = conf_thres
-            print("[INFO] YOLOv5 loaded successfully")
+        if yolo_lines:
+            txt_name = jf.replace(".json", ".txt")
+            out_path = os.path.join(YOLO_LABEL_ROOT, split, txt_name)
 
-        except Exception as e:
-            print("[WARN] YOLOv5 not available, running without obstacle detection")
-            print("[WARN]", e)
-            self.model = None
+            with open(out_path, "w") as f:
+                f.write("\n".join(yolo_lines))
 
-    def detect(self, frame):
-        """
-        Returns:
-        {
-            'frame': overlay frame,
-            'detections': list of detections
-        }
-        """
-        overlay = frame.copy()
-        detections = []
+            written += 1
+        else:
+            skipped += 1
 
-        # ----------------------------
-        # If YOLO not loaded → bypass
-        # ----------------------------
-        if self.model is None:
-            return {'frame': overlay, 'detections': detections}
+    print(f"  → Written files: {written}")
+    print(f"  → Skipped (empty): {skipped}")
 
-        # BGR → RGB
-        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    total_written += written
+    total_skipped += skipped
 
-        with torch.no_grad():
-            results = self.model(img)
-
-        # YOLOv5 output
-        if not hasattr(results, 'xyxy'):
-            return {'frame': overlay, 'detections': detections}
-
-        preds = results.xyxy[0].cpu().numpy()
-
-        for x1, y1, x2, y2, conf, cls in preds:
-            if conf < self.conf_thres:
-                continue
-
-            label = f"{self.model.names[int(cls)]} {conf:.2f}"
-            draw_bbox(overlay, [x1, y1, x2, y2], label=label)
-
-            detections.append({
-                'xyxy': [float(x1), float(y1), float(x2), float(y2)],
-                'conf': float(conf),
-                'class': int(cls),
-                'label': self.model.names[int(cls)]
-            })
-
-        return {'frame': overlay, 'detections': detections}
-
-
-# ----------------------------
-# Local test
-# ----------------------------
-if __name__ == '__main__':
-    od = ObstacleDetector(weights_path=None)  # safe default
-    cap = cv2.VideoCapture(0)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-
-        res = od.detect(frame)
-        cv2.imshow('obstacles', res['frame'])
-
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    cap.release()
-    cv2.destroyAllWindows()
+print("\n✅ BDD100K VIDEO-style → YOLO conversion COMPLETE")
+print(f"Total written: {total_written}")
+print(f"Total skipped: {total_skipped}")
