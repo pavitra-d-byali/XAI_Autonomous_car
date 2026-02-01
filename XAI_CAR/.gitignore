@@ -1,13 +1,11 @@
 # Python
 __pycache__/
 *.pyc
+
+# Virtual environments
 venv*/
 .env
 
-# Training artifacts
-checkpoints/
-inference/output/
-
-# OS
-.DS_Store
-Thumbs.db
+# Outputs (do not track generated files)
+outputs/
+videos/output/
