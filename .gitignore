@@ -5,3 +5,5 @@ venv/
 tfenv/
 __pycache__/
 *.pyc
+XAI_CAR/checkpoints/
+XAI_CAR/inference/output/
