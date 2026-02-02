@@ -13,8 +13,9 @@ from models.unet import UNet
 DEVICE = "cpu"
 IMG_SIZE = (64, 128)
 MODEL_PATH = "checkpoints/unet_epoch_2.pth"
+IMAGE_PATH = "data/bdd100k/images/val/7d06fefd-f7be05a6.jpg"
 
-IMAGE_PATH = "data/bdd100k/images/val/0001.jpg"  # change if needed
+# IMAGE_PATH = "data/bdd100k/images/val/0001.jpg"  # change if needed
 OUTPUT_PATH = "inference/output/xai_image.png"
 
 os.makedirs("inference/output", exist_ok=True)
