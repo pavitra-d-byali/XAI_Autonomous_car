@@ -11,3 +11,8 @@ Quick start:
 
 
 Notes on change points are in each file header.
+
+<!-- PS C:\Users\dell\OneDrive\Documents\XAI_Autonomous_car> cd XAI_CAR
+>> venv310\Scripts\activate
+>> python src\main.py --video data\test_videos\sample.mp4 -->
+<!-- python src/main.py --video "../videos/input/nD_2.mp4" -->
