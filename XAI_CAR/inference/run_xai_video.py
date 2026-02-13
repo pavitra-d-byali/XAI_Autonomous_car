@@ -8,8 +8,12 @@ from PIL import Image
 import os
 
 from models.unet import UNet
+from xai.gradcam_unet import UNetGradCAM
+import sys, os
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, PROJECT_ROOT)
 
-# ---------- CONFIG ----------
+# ================= CONFIG =================
 DEVICE = "cpu"
 IMG_SIZE = (64, 128)
 MODEL_PATH = "checkpoints/unet_epoch_2.pth"
@@ -19,7 +23,7 @@ OUTPUT_VIDEO = "videos/output/xai_lane_direction_video.mp4"
 
 os.makedirs("videos/output", exist_ok=True)
 
-# ---------- DIRECTION ESTIMATION ----------
+# ================= DIRECTION LOGIC =================
 def estimate_direction(mask):
     h, w = mask.shape
     bottom = mask[int(h * 0.75):, :]
@@ -39,16 +43,23 @@ def estimate_direction(mask):
     else:
         return "STRAIGHT"
 
-# ---------- MODEL ----------
+# ================= LOAD MODEL =================
 model = UNet().to(DEVICE)
 model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
 model.eval()
+
+# ⚠️ IMPORTANT: change encoder4 if your UNet uses a different name
+cam_generator = UNetGradCAM(
+    model=model,
+    target_layer=model.encoder4
+)
 
 transform = T.Compose([
     T.Resize(IMG_SIZE),
     T.ToTensor()
 ])
 
+# ================= VIDEO IO =================
 cap = cv2.VideoCapture(INPUT_VIDEO)
 fps = int(cap.get(cv2.CAP_PROP_FPS))
 w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -59,6 +70,7 @@ out = cv2.VideoWriter(OUTPUT_VIDEO, fourcc, fps, (w, h))
 
 frame_id = 0
 
+# ================= MAIN LOOP =================
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
@@ -66,30 +78,26 @@ while cap.isOpened():
 
     frame_id += 1
 
-    # ---------- PREP ----------
+    # ---------- PREPROCESS ----------
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     pil = Image.fromarray(rgb)
-
     inp = transform(pil).unsqueeze(0).to(DEVICE)
-    inp.requires_grad = True
 
     # ---------- FORWARD ----------
-    output = model(inp)
+    with torch.enable_grad():
+        output = model(inp)
+
     mask_pred = output.squeeze().detach().cpu().numpy()
     mask_bin = (mask_pred > 0.5).astype(np.uint8) * 255
     mask_bin = cv2.resize(mask_bin, (w, h))
 
-    # ---------- XAI ----------
-    score = output.mean()
-    score.backward()
-
-    saliency = inp.grad.abs().max(dim=1)[0]
-    saliency = saliency.squeeze().cpu().numpy()
-    saliency = (saliency - saliency.min()) / (saliency.max() + 1e-8)
-    saliency = cv2.resize(saliency, (w, h))
+    # ---------- GRAD-CAM (REAL XAI) ----------
+    cam = cam_generator.generate(inp)
+    cam = cv2.resize(cam, (w, h))
 
     heatmap = cv2.applyColorMap(
-        np.uint8(255 * saliency), cv2.COLORMAP_JET
+        np.uint8(255 * cam),
+        cv2.COLORMAP_JET
     )
 
     overlay = cv2.addWeighted(frame, 0.6, heatmap, 0.4, 0)
@@ -105,8 +113,12 @@ while cap.isOpened():
     }.get(direction, arrow_start)
 
     cv2.arrowedLine(
-        overlay, arrow_start, arrow_end,
-        (0, 255, 0), 5, tipLength=0.3
+        overlay,
+        arrow_start,
+        arrow_end,
+        (0, 255, 0),
+        5,
+        tipLength=0.3
     )
 
     cv2.putText(
@@ -127,4 +139,4 @@ while cap.isOpened():
 cap.release()
 out.release()
 
-print("✅ XAI + Direction video saved to:", OUTPUT_VIDEO)
+print("✅ Grad-CAM XAI + Direction video saved to:", OUTPUT_VIDEO)
