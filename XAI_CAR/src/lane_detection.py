@@ -3,14 +3,14 @@ import numpy as np
 import torch
 
 from utils import draw_text, preprocess_for_cnn
-from lane_model import LaneCNN
+from training.lane_unet import LaneUNet
 
 
 class LaneDetector:
     """
     Lane Detector using:
-    - CNN-based lane segmentation (preferred)
-    - Classical OpenCV fallback (safe mode)
+    - UNet segmentation (primary)
+    - OpenCV fallback (safe mode)
     """
 
     def __init__(self, model_path=None, device="cpu"):
@@ -18,51 +18,34 @@ class LaneDetector:
         self.model = None
         self.use_cnn = False
 
-        if model_path:
+        if model_path is not None:
             try:
-                # Initialize architecture
-                self.model = LaneCNN().to(self.device)
-
-                # Load WEIGHTS ONLY (PyTorch 2.6+ safe)
-                state_dict = torch.load(
-                    model_path,
-                    map_location=self.device,
-                    weights_only=True
-                )
+                self.model = LaneUNet().to(self.device)
+                state_dict = torch.load(model_path, map_location=self.device)
                 self.model.load_state_dict(state_dict)
                 self.model.eval()
 
                 self.use_cnn = True
-                print("[INFO] Lane CNN loaded successfully")
+                print("[INFO] Lane UNet loaded successfully")
 
             except Exception as e:
-                print("[WARN] CNN load failed, using OpenCV fallback:", e)
-                self.model = None
+                print("[WARN] UNet load failed, using OpenCV fallback:", e)
                 self.use_cnn = False
 
+    # ==========================================================
     def detect(self, frame):
-        """
-        Args:
-            frame (BGR image)
-
-        Returns:
-            dict:
-                frame           -> visualization
-                lane_mask       -> binary mask
-                steering_angle  -> float | None
-        """
 
         h, w = frame.shape[:2]
         overlay = frame.copy()
-        lane_mask = None
         steering_angle = None
+        lane_mask = None
 
-        # =====================================================
-        # CNN-based lane detection
-        # =====================================================
+        # ======================================================
+        # 1️⃣ UNet Segmentation
+        # ======================================================
         if self.use_cnn and self.model is not None:
             try:
-                inp = preprocess_for_cnn(frame, size=(224, 224))
+                inp = preprocess_for_cnn(frame, size=(256, 512))
                 inp = torch.tensor(inp, dtype=torch.float32).unsqueeze(0).to(self.device)
 
                 with torch.no_grad():
@@ -70,74 +53,152 @@ class LaneDetector:
                     probs = torch.sigmoid(logits)
 
                 mask = probs.squeeze().cpu().numpy()
-                lane_mask = (mask > 0.5).astype(np.uint8) * 255
+
+                # 🔥 Lower threshold (important)
+                lane_mask = (mask > 0.3).astype(np.uint8) * 255
                 lane_mask = cv2.resize(lane_mask, (w, h))
 
-                # Overlay visualization
-                overlay = cv2.addWeighted(
-                    frame, 0.8,
-                    cv2.cvtColor(lane_mask, cv2.COLOR_GRAY2BGR),
-                    0.2, 0
-                )
+                # Only consider bottom 40% of image
+                roi_start = int(h * 0.6)
+                roi_mask = lane_mask[roi_start:h, :]
 
-                # Steering estimation
-                ys, xs = np.where(lane_mask > 0)
-                if len(xs) > 0:
-                    center_x = int(xs.mean())
-                    steering_angle = (center_x - w // 2) / (w // 2) * 25
-                    draw_text(overlay, f"Steer: {steering_angle:.2f}", (10, 30))
+                ys, xs = np.where(roi_mask > 0)
 
-                return {
-                    "frame": overlay,
-                    "lane_mask": lane_mask,
-                    "steering_angle": steering_angle
-                }
+                if len(xs) > 200:
+
+                    # Split into left/right by image center
+                    left_pixels = xs[xs < w // 2]
+                    right_pixels = xs[xs >= w // 2]
+
+                    left_x = None
+                    right_x = None
+
+                    if len(left_pixels) > 100:
+                        left_x = int(np.mean(left_pixels))
+
+                    if len(right_pixels) > 100:
+                        right_x = int(np.mean(right_pixels))
+
+                    # Draw lanes if detected
+                    if left_x is not None:
+                        cv2.line(
+                            overlay,
+                            (left_x, h),
+                            (left_x, roi_start),
+                            (0, 255, 0),
+                            3,
+                        )
+
+                    if right_x is not None:
+                        cv2.line(
+                            overlay,
+                            (right_x, h),
+                            (right_x, roi_start),
+                            (0, 255, 0),
+                            3,
+                        )
+
+                    if left_x is not None and right_x is not None:
+                        center_x = int((left_x + right_x) / 2)
+
+                        cv2.line(
+                            overlay,
+                            (center_x, h),
+                            (center_x, roi_start),
+                            (0, 0, 255),
+                            3,
+                        )
+
+                        steering_angle = (center_x - w // 2) / (w // 2) * 25
+
+                # Draw mask overlay
+                color_mask = np.zeros_like(frame)
+                color_mask[lane_mask > 0] = [0, 255, 0]
+                overlay = cv2.addWeighted(overlay, 0.8, color_mask, 0.3, 0)
 
             except Exception as e:
-                print("[WARN] CNN inference failed, switching to OpenCV:", e)
+                print("[WARN] UNet inference failed:", e)
                 self.use_cnn = False
 
-        # =====================================================
-        # Classical OpenCV fallback
-        # =====================================================
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 50, 150)
+        # ======================================================
+        # 2️⃣ OpenCV fallback
+        # ======================================================
+        if not self.use_cnn:
 
-        roi = np.zeros_like(edges)
-        polygon = np.array([[ 
-            (0, h),
-            (w, h),
-            (int(0.6 * w), int(0.6 * h)),
-            (int(0.4 * w), int(0.6 * h))
-        ]], np.int32)
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            blur = cv2.GaussianBlur(gray, (5, 5), 0)
+            edges = cv2.Canny(blur, 50, 150)
 
-        cv2.fillPoly(roi, polygon, 255)
-        cropped = cv2.bitwise_and(edges, roi)
+            roi = np.zeros_like(edges)
+            polygon = np.array(
+                [[
+                    (0, h),
+                    (w, h),
+                    (int(0.6 * w), int(0.6 * h)),
+                    (int(0.4 * w), int(0.6 * h)),
+                ]],
+                np.int32,
+            )
 
-        lines = cv2.HoughLinesP(
-            cropped, 1, np.pi / 180,
-            threshold=30,
-            minLineLength=30,
-            maxLineGap=200
-        )
+            cv2.fillPoly(roi, polygon, 255)
+            cropped = cv2.bitwise_and(edges, roi)
 
-        slopes = []
-        if lines is not None:
-            for x1, y1, x2, y2 in lines[:, 0]:
-                cv2.line(overlay, (x1, y1), (x2, y2), (0, 255, 0), 3)
-                if x2 != x1:
-                    slopes.append((y2 - y1) / (x2 - x1))
+            lines = cv2.HoughLinesP(
+                cropped,
+                rho=1,
+                theta=np.pi / 180,
+                threshold=50,
+                minLineLength=50,
+                maxLineGap=150,
+            )
 
-        if slopes:
-            mean_slope = np.mean(slopes)
-            steering_angle = np.degrees(np.arctan(mean_slope))
-            draw_text(overlay, f"Steer(est): {steering_angle:.1f}", (10, 30))
+            left_x = []
+            right_x = []
 
-        lane_mask = cv2.dilate(cropped, np.ones((5, 5), np.uint8), iterations=2)
+            if lines is not None:
+                for x1, y1, x2, y2 in lines[:, 0]:
+                    if x2 == x1:
+                        continue
+
+                    slope = (y2 - y1) / (x2 - x1)
+
+                    if abs(slope) < 0.5:
+                        continue
+
+                    if slope < 0:
+                        left_x.append(x1)
+                    else:
+                        right_x.append(x1)
+
+                    cv2.line(overlay, (x1, y1), (x2, y2), (0, 255, 0), 3)
+
+            if left_x and right_x:
+                lx = int(np.mean(left_x))
+                rx = int(np.mean(right_x))
+                center_x = int((lx + rx) / 2)
+
+                cv2.line(
+                    overlay,
+                    (center_x, h),
+                    (center_x, int(h * 0.6)),
+                    (0, 0, 255),
+                    3,
+                )
+
+                steering_angle = (center_x - w // 2) / (w // 2) * 25
+
+            lane_mask = cropped
+
+        # ======================================================
+        # Steering Text
+        # ======================================================
+        if steering_angle is not None:
+            draw_text(overlay, f"Steering: {steering_angle:.2f}", (10, 30))
+        else:
+            draw_text(overlay, "Steering: N/A", (10, 30))
 
         return {
             "frame": overlay,
             "lane_mask": lane_mask,
-            "steering_angle": steering_angle
+            "steering_angle": steering_angle,
         }

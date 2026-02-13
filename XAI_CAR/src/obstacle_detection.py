@@ -1,101 +1,108 @@
-import torch
 import cv2
-import numpy as np
-from utils import draw_bbox
+from ultralytics import YOLO
 
 
 class ObstacleDetector:
-    def __init__(self, weights_path=None, device='cpu', conf_thres=0.3):
+    """
+    Obstacle detection using YOLOv8 (Ultralytics).
+
+    Returns:
+    {
+        'frame': frame_with_boxes,
+        'detections': [
+            {
+                'xyxy': [x1, y1, x2, y2],
+                'conf': confidence,
+                'class': class_id,
+                'label': class_name
+            }
+        ]
+    }
+    """
+
+    def __init__(self, weights_path, device='cpu', conf_thres=0.4):
         self.device = device
         self.conf_thres = conf_thres
         self.model = None
 
-        # ----------------------------
-        # Try loading YOLOv5 safely
-        # ----------------------------
         try:
-            if weights_path and weights_path.endswith('.pt'):
-                # Check for empty / invalid weight file
-                try:
-                    with open(weights_path, 'rb') as f:
-                        f.read(1)
-                except Exception:
-                    raise RuntimeError("YOLO weight file is missing or empty")
-
-                self.model = torch.hub.load(
-                    'ultralytics/yolov5',
-                    'custom',
-                    path=weights_path,
-                    force_reload=False
-                )
-            else:
-                # fallback to pretrained yolov5s
-                self.model = torch.hub.load(
-                    'ultralytics/yolov5',
-                    'yolov5s',
-                    pretrained=True
-                )
-
-            self.model.to(self.device)
-            self.model.conf = conf_thres
-            print("[INFO] YOLOv5 loaded successfully")
+            self.model = YOLO(weights_path)
+            self.model.conf = conf_thres  # global confidence threshold
+            print("[INFO] YOLOv8 loaded successfully")
 
         except Exception as e:
-            print("[WARN] YOLOv5 not available, running without obstacle detection")
+            print("[WARN] YOLOv8 not available, obstacle detection disabled")
             print("[WARN]", e)
             self.model = None
 
     def detect(self, frame):
-        """
-        Returns:
-        {
-            'frame': overlay frame,
-            'detections': list of detections
-        }
-        """
         overlay = frame.copy()
         detections = []
 
-        # ----------------------------
-        # If YOLO not loaded → bypass
-        # ----------------------------
         if self.model is None:
-            return {'frame': overlay, 'detections': detections}
+            return {
+                'frame': overlay,
+                'detections': detections
+            }
 
-        # BGR → RGB
-        img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # YOLOv8 inference (BGR frame is fine)
+        results = self.model(
+            frame,
+            device=self.device,
+            verbose=False
+        )[0]
 
-        with torch.no_grad():
-            results = self.model(img)
+        if results.boxes is None:
+            return {
+                'frame': overlay,
+                'detections': detections
+            }
 
-        # YOLOv5 output
-        if not hasattr(results, 'xyxy'):
-            return {'frame': overlay, 'detections': detections}
-
-        preds = results.xyxy[0].cpu().numpy()
-
-        for x1, y1, x2, y2, conf, cls in preds:
+        for box in results.boxes:
+            conf = float(box.conf[0])
             if conf < self.conf_thres:
                 continue
 
-            label = f"{self.model.names[int(cls)]} {conf:.2f}"
-            draw_bbox(overlay, [x1, y1, x2, y2], label=label)
+            cls_id = int(box.cls[0])
+            label = self.model.names[cls_id]
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+            # Draw bounding box
+            cv2.rectangle(
+                overlay,
+                (x1, y1),
+                (x2, y2),
+                (0, 0, 255),
+                2
+            )
+            cv2.putText(
+                overlay,
+                f"{label} {conf:.2f}",
+                (x1, max(y1 - 7, 15)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 0, 255),
+                2
+            )
 
             detections.append({
                 'xyxy': [float(x1), float(y1), float(x2), float(y2)],
-                'conf': float(conf),
-                'class': int(cls),
-                'label': self.model.names[int(cls)]
+                'conf': conf,
+                'class': cls_id,
+                'label': label
             })
 
-        return {'frame': overlay, 'detections': detections}
+        return {
+            'frame': overlay,
+            'detections': detections
+        }
 
 
 # ----------------------------
-# Local test
+# Standalone webcam test
 # ----------------------------
-if __name__ == '__main__':
-    od = ObstacleDetector(weights_path=None)  # safe default
+if __name__ == "__main__":
+    od = ObstacleDetector("models/yolov8n.pt", device="cpu")
     cap = cv2.VideoCapture(0)
 
     while True:
@@ -104,7 +111,7 @@ if __name__ == '__main__':
             break
 
         res = od.detect(frame)
-        cv2.imshow('obstacles', res['frame'])
+        cv2.imshow("YOLOv8 Obstacle Detection", res["frame"])
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
