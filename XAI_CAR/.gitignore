@@ -9,3 +9,4 @@ venv*/
 # Outputs (do not track generated files)
 outputs/
 videos/output/
+models/checkpoints/
