@@ -10,3 +10,7 @@ venv*/
 outputs/
 videos/output/
 models/checkpoints/
+venv310/
+__pycache__/
+*.pyc
+ 
