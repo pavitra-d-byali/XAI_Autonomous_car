@@ -34,3 +34,4 @@ class LaneCNN(nn.Module):
         x = self.features(x)
         x = self.decoder(x)
         return x
+   
