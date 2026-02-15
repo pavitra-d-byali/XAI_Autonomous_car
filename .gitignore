@@ -8,3 +8,6 @@ __pycache__/
 XAI_CAR/checkpoints/
 XAI_CAR/inference/output/
 XAI_CAR/models/weights/
+XAI_CAR/models/weights/
+*.pth
+*.pt
