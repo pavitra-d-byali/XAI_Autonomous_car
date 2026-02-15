@@ -11,3 +11,6 @@ XAI_CAR/models/weights/
 XAI_CAR/models/weights/
 *.pth
 *.pt
+XAI_CAR/models/weights/
+*.pth
+*.pt
